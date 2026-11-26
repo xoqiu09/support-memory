@@ -1,0 +1,10 @@
+{
+  "A": [
+    {"id": "A-101", "status": "shipped", "product": "洗衣机"},
+    {"id": "A-102", "status": "unshipped", "product": "电饭煲"}
+  ],
+  "B": [
+    {"id": "B-201", "status": "shipped", "product": "空气净化器"},
+    {"id": "B-202", "status": "unshipped", "product": "电风扇"}
+  ]
+}
