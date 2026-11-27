@@ -20,6 +20,10 @@ def contains_personal_number(text):
     return bool(_ID_NUMBER.search(text) or _PHONE_NUMBER.search(text))
 
 
+def contains_sensitive_data(text):
+    return bool(_ADDRESS.search(text)) or contains_personal_number(text)
+
+
 def redact(text):
     text = _ADDRESS.sub("[地址已遮盖]", text)
     text = _ID_NUMBER.sub("[身份证号已遮盖]", text)

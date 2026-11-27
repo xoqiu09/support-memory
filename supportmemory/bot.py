@@ -2,22 +2,49 @@
 
 from .prefs import extract_preferences
 from .redact import redact
-from .store import read_preferences, write_preferences
+from .store import (
+    consent_enabled,
+    delete_session_preferences,
+    read_preferences,
+    read_session_preferences,
+    record_turn,
+    transaction,
+    validate_identifiers,
+    write_preferences,
+    write_session_preferences,
+)
 
 
 _STATUS = {"shipped": "已发货", "unshipped": "未发货"}
 
 
-def chat(connection, orders, account, message, written_at):
-    updates = extract_preferences(message)
-    if updates:
-        updates = {
-            key: redact(value) if value is not None else None for key, value in updates.items()
-        }
-        write_preferences(connection, account, updates, written_at)
+def chat(connection, orders, account, message, written_at, session=None):
+    validate_identifiers(account, session)
+    updates = {
+        key: redact(value) if value is not None else None
+        for key, value in extract_preferences(message).items()
+    }
 
-    preferences = read_preferences(connection, account)
-    return _reply(orders.get(account, []), preferences)
+    with transaction(connection):
+        if updates:
+            if consent_enabled(connection, account):
+                # 保留原来的无会话调用方式。
+                if session is None:
+                    write_preferences(connection, account, updates, written_at)
+                else:
+                    write_preferences(connection, account, updates, written_at, session)
+                    for key in updates:
+                        delete_session_preferences(connection, account, written_at, session, key)
+            elif session is not None:
+                write_session_preferences(connection, account, session, updates, written_at)
+
+        preferences = read_preferences(connection, account, session, written_at)
+        if session is not None:
+            preferences.update(read_session_preferences(connection, account, session, written_at))
+        answer = _reply(orders.get(account, []), preferences)
+        if session is not None:
+            record_turn(connection, account, session, message, answer, updates)
+        return answer
 
 
 def _reply(orders, preferences):
