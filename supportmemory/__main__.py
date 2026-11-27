@@ -139,6 +139,9 @@ def main():
     export_parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
 
+    if args.command != "export" and not args.account.strip():
+        parser.error("账户不能为空。")
+
     if args.command in {"chat", "export"}:
         try:
             orders = json.loads(_ORDERS_PATH.read_text(encoding="utf-8"))

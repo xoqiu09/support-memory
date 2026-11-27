@@ -6,14 +6,14 @@ import re
 PREFERENCE_KEYS = ("order_filter", "brevity", "salutation")
 
 _RULE = re.compile(
-    r"(?P<negated>(?:不要|不用|不必|别|不)\s*)?(?:"
+    r"(?P<negated>(?:不要|不用|不必|不想|别|不)\s*)?(?:"
     r"只看\s*(?P<filter>未发货|已发货)"
     r"|(?P<all>看\s*全部订单)"
     r"|(?P<short>(?:回答\s*)?简短点)"
     r"|(?P<long>(?:回答\s*)?详细一点)"
     r"|(?P<salutation>叫我))"
 )
-_CLAUSE_END = re.compile(r"[，,。！？!?；;\r\n]")
+_CLAUSE_END = re.compile(r"[，,。！？!?；;\r\n]|\.(?=\s)")
 
 
 def extract_preferences(message):
