@@ -24,13 +24,16 @@ def append_turn(window, message, answer, updates):
     turns.append({"user": redact(message), "reply": redact(answer), "preferences": preferences})
 
     while turns and (len(turns) > MAX_TURNS or _over_budget(window)):
+        if len(turns) == 1 and not _over_budget({"turns": turns, "summary": []}):
+            break
         oldest = turns.pop(0)
         summary.append({"user": redact(oldest["user"][:20]), "preferences": oldest["preferences"]})
         # 若只保留最新摘要仍放不下，先继续折叠，避免过早丢掉旧摘要。
         if len(turns) <= MAX_TURNS and not _over_budget({"turns": turns, "summary": summary[-1:]}):
             break
 
-    while len(summary) > 1 and _over_budget(window):
+    minimum_summaries = 0 if turns else 1
+    while len(summary) > minimum_summaries and _over_budget(window):
         summary.pop(0)
 
     if _over_budget(window):

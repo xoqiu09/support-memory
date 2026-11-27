@@ -12,6 +12,7 @@ from .prefs import PREFERENCE_KEYS
 from .store import (
     ACTIVITY_FILENAME,
     InvalidIdentifier,
+    MissingActivityDatabase,
     forget,
     initialize,
     read_audit,
@@ -103,9 +104,39 @@ def _export(orders, path, m2_path):
                 temporary_path = Path(temporary.name)
                 cleanup.callback(temporary_path.unlink, missing_ok=True)
                 temporary.write(content.encode("utf-8"))
-            staged.append((temporary_path, destination))
-        for temporary_path, destination in staged:
-            temporary_path.replace(destination)
+            staged.append(temporary_path)
+
+        original = None
+        if path.exists():
+            with NamedTemporaryFile(
+                dir=path.parent, prefix=".supportmemory-backup-", delete=False
+            ) as temporary:
+                original = Path(temporary.name)
+            try:
+                path.rename(original)
+            except OSError:
+                original.unlink(missing_ok=True)
+                raise
+
+        first, second = staged
+        first_installed = False
+        try:
+            first.replace(path)
+            first_installed = True
+            second.replace(m2_path)
+        except OSError as export_error:
+            if original is not None:
+                try:
+                    original.replace(path)
+                except OSError as rollback_error:
+                    raise OSError(
+                        f"导出失败（{export_error}），恢复失败（{rollback_error}）。原文件保存在 {original}。"
+                    ) from rollback_error
+            elif first_installed:
+                path.unlink(missing_ok=True)
+            raise
+        if original is not None:
+            original.unlink()
 
 
 def main():
@@ -166,7 +197,8 @@ def main():
     try:
         validate_identifiers(args.account, getattr(args, "session", None))
         with closing(sqlite3.connect(_DATABASE_PATH)) as connection:
-            initialize(connection)
+            read_table = args.command if args.command in {"history", "audit"} else None
+            initialize(connection, read_table=read_table)
             if args.command == "chat":
                 print(chat(connection, orders, args.account, args.message, utc_now(), args.session))
             elif args.command == "forget":
@@ -189,6 +221,8 @@ def main():
                 print(json.dumps(preferences, ensure_ascii=False, indent=2))
     except InvalidIdentifier as error:
         parser.error(str(error))
+    except MissingActivityDatabase:
+        parser.exit(1, "记忆数据库缺少授权记录。请从同一备份恢复 memory-m2.sqlite3，再重试。\n")
     except sqlite3.OperationalError as error:
         if "locked" in str(error).lower():
             parser.exit(1, "记忆数据库被锁定。请关闭占用数据库的程序，再重试。\n")
