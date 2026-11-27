@@ -1,8 +1,35 @@
 # 青柚家电客服记忆
 
-客服换了会话，应该还能记得同一账户想看哪些订单、回答要多长、该怎么称呼。这个演示把三种偏好存在本地 SQLite 里。客服按账户读取偏好和订单，每次回答的第一行会说明用到了什么设置。用户可以查看写入时间，也可以清除其中一项或全部偏好。
+客服团队接待回访客户时，往往要重新确认客户之前说过的偏好，拖慢处理速度。
 
-青柚家电、账户和订单都是样例。写入 SQLite 前会遮盖常见手机号、身份证号和详细地址。`memory.sqlite3` 保存账户偏好和写入时间，`memory-m2.sqlite3` 保存授权状态、会话偏好、历史和审计。
+- 同一账户换个会话，仍能沿用订单筛选、回答长短和称呼偏好。
+- 客户可查看或清除偏好，也可关闭跨会话保存。
+- 写入前遮盖常见的手机号、身份证号和详细地址，记录偏好的读取、写入和删除。
+
+## 怎么验证的
+
+本地运行 `python3 -m unittest`，**38 项测试全部通过**。测试核对了跨会话记忆、账户隔离、偏好清除、写入前遮盖、对话历史和摘要的长度上限。测试也确认，关闭跨会话保存后，新偏好只在当前会话生效，审计记录里没有偏好值。
+
+验证测试时，分别故意跳过写入前遮盖、移除按账户筛选，重跑对应测试，两项测试都按预期失败。
+
+## 试用
+
+打开 [在线演示](https://xoqiu.cn/memory-demo/index.html)，或在刚克隆的仓库根目录用 Python 运行下面两条命令。换到新会话后，仍只会看到未发货订单。
+
+~~~bash
+python3 -m supportmemory chat --account A --session first "以后只看未发货的"
+python3 -m supportmemory chat --account A --session next "列出订单"
+~~~
+
+数据均为虚构，没有真实用户，客服按规则回复，未接入真实模型。我负责定需求和验收标准，并指导 AI 编程工具实现。
+
+## English overview
+
+Support teams lose time asking returning customers to repeat their preferences.\
+This offline Python 3.10+ CLI remembers preferences across chats for the same account and lets customers view or clear them and turn off cross-chat saving.\
+It masks common personal details before storage, keeps a size-limited history and summary of redacted chats, and logs preference reads, writes, and deletions without recording the values.\
+It exports reproducible M1 and M2 demo JSON files. All 38 tests passed. Skipping redaction or removing the account filter made the relevant tests fail.\
+The demo uses fictional data, with no real users or live model. I set the requirements and acceptance criteria and directed AI coding tools to build it.
 
 ## 运行
 
@@ -40,7 +67,7 @@ python3 -m unittest -v
 )
 ~~~
 
-- **chat** 用 `--account` 选择账户，`--session` 选择会话。账户和会话标识都应避开手机号、身份证号和详细地址。打开同意时，示例中的 `a1` 和 `a2` 都只列出 `A-102`。关闭同意并清掉旧偏好后，`a3` 两次都只列出 `A-101`，新会话 `a4` 列出全部订单。
+- **chat** 用 `--account` 选择账户，`--session` 选择会话。回答首行会说明本次采用的设置。账户和会话标识都应避开手机号、身份证号和详细地址。打开同意时，示例中的 `a1` 和 `a2` 都只列出 `A-102`。关闭同意并清掉旧偏好后，`a3` 两次都只列出 `A-101`，新会话 `a4` 列出全部订单。
 - **show** 输出该账户跨会话保存的偏好、值和 UTC 写入时间。示例可看到 `order_filter` 的值是 `unshipped`。
 - **consent** 按账户设为 `on` 或 `off`，默认开启。关闭保留已有偏好，新识别的偏好仅在相同会话生效，重开命令仍可使用。重新开启后，新识别的偏好恢复跨会话保存。
 - **forget** 带 `--key` 时清除 `order_filter`、`brevity` 或 `salutation`。省略 `--key` 时清除该账户的全部偏好。清除范围包括会话偏好，历史和审计继续保留。
@@ -48,9 +75,9 @@ python3 -m unittest -v
 - **audit** 输出该账户每个偏好键的读取、写入和删除事件。每条只有账户、会话、键、操作和 UTC 时间。`show` 及账户级 `forget` 的会话字段为 `null`，清除会话偏好时记录所属会话。
 - **export** 生成兼容原有网站数据格式的 `demo.json`，并生成 M2 演示数据 `demo.m2.json`。前者包含原有六步的样例输入、回答和账户偏好。后者展示关闭同意后的同会话和新会话回答、遮盖后的窗口和摘要，以及审计记录。两份都由独立的内存数据库和固定时间生成。两份输出路径均受保护，指向记忆数据库或样例订单文件时会报错。
 
-需要保留数据库或演示 JSON 时，按 [实施交接](docs/HANDOFF.md) 手动搭建并保留工作目录。两份 SQLite 数据库和相对输出路径都以运行命令时所在的目录为准。
+需要保留数据库或演示 JSON 时，按 [实施交接](docs/HANDOFF.md) 手动搭建并保留工作目录。`memory.sqlite3` 保存账户偏好和写入时间，`memory-m2.sqlite3` 保存授权状态、会话偏好、对话历史和审计记录。两份 SQLite 数据库和相对输出路径都以运行命令时所在的目录为准。
 
-## 七项测试分别证明什么
+## M1 核心测试分别证明什么
 
 | 测试 | 核对的结果 |
 | --- | --- |
@@ -82,8 +109,4 @@ python3 -m unittest -v
 
 ## 范围
 
-本项目交付中文命令行、规则客服、SQLite 记忆和供演示页使用的 JSON。真实模型接入、网页、多语言和向量检索留在本次交付范围外。
-
-## English overview
-
-An offline Python 3.10+ CLI for a fictional appliance support agent. It supports per-account consent, a redacted session window with a bounded summary, and a value-free preference audit. It exports reproducible M1 and M2 demo JSON files.
+本项目交付中文命令行、规则客服、SQLite 记忆和供演示页使用的 JSON。演示网页代码、多语言和向量检索留在本次交付范围外。
