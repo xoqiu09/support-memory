@@ -12,7 +12,7 @@ _ADDRESS = re.compile(
 )
 _ID_NUMBER = re.compile(rf"(?<!{_DIGIT})(?:{_DIGIT}{{17}}[0-9０-９XxＸｘ]|{_DIGIT}{{15}})(?!{_DIGIT})")
 _PHONE_NUMBER = re.compile(
-    rf"(?<!{_DIGIT})(?:[+＋]?[8８][6６][ -]?)?[1１][3-9３-９](?:[ -]?{_DIGIT}){{9}}(?!{_DIGIT})"
+    rf"(?<!{_DIGIT})(?:[+＋]?[8８][6６][ \u3000-]?)?[1１][3-9３-９](?:[ \u3000-]?{_DIGIT}){{9}}(?!{_DIGIT})"
 )
 
 

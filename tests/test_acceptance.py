@@ -112,6 +112,7 @@ class AcceptanceTests(unittest.TestCase):
         examples = (
             ("电话", "13812345678", "[手机号已遮盖]"),
             ("全角电话", "１３８１２３４５６７８", "[手机号已遮盖]"),
+            ("全角空格分组的电话", "１３８　１２３４　５６７８", "[手机号已遮盖]"),
             ("身份证", "00000020000101001X", "[身份证号已遮盖]"),
             ("地址", "青柚市云杉区示例大街27号3号楼2单元602室", "[地址已遮盖]"),
             ("带空格的地址", "青柚路 27 号", "[地址已遮盖]"),
@@ -180,6 +181,50 @@ class AcceptanceTests(unittest.TestCase):
         self.assertEqual(count, 1)
         self.assertEqual(after, count)
         self.assertEqual(self.database.read_bytes(), before)
+
+    def test_not_wanting_a_filter_preserves_existing_preference(self):
+        self.chat("A", "a1", "只看已发货的")
+        preferences = self.show("A")
+
+        self.assertEqual(
+            self.chat("A", "a2", "我不想只看未发货的"),
+            "按你的设置，只列已发货订单\nA-101（已发货）",
+        )
+        self.assertEqual(self.show("A"), preferences)
+
+    def test_failed_reply_does_not_save_preferences(self):
+        self.assertEqual(self.show("A"), {})
+        orders_path = self.workdir / "data/orders.json"
+        orders = json.loads(orders_path.read_text(encoding="utf-8"))
+        del orders["A"][0]["product"]
+        orders_path.write_text(json.dumps(orders, ensure_ascii=False), encoding="utf-8")
+
+        result = self.run_cli("chat", "--account", "A", "--session", "a1", "详细一点")
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("product", result.stderr)
+        self.assertEqual(self.show("A"), {})
+
+    def test_blank_accounts_are_rejected_by_all_account_commands(self):
+        self.assertEqual(self.show("A"), {})
+        before = self.database.read_bytes()
+        for account in ("", " \u3000\t"):
+            for command, options in (
+                ("chat", ("--session", "a1", "叫我小柚")),
+                ("show", ()),
+                ("forget", ()),
+            ):
+                with self.subTest(account=account, command=command):
+                    result = self.run_cli(command, "--account", account, *options)
+                    self.assertEqual(result.returncode, 2)
+                    self.assertIn("账户不能为空", result.stderr)
+                    self.assertEqual(self.database.read_bytes(), before)
+
+    def test_period_with_space_ends_salutation(self):
+        self.chat("A", "a1", "叫我小柚. 我的洗衣机漏水了。")
+
+        self.assertEqual(self.show("A")["salutation"]["value"], "小柚")
+        self.assertEqual(self.chat("A", "a2", "列出订单"), f"小柚，{A_DEFAULT}")
 
     def test_06_export_is_repeatable_and_has_no_machine_identifiers(self):
         self.chat("A", "a1", "只看已发货的")
