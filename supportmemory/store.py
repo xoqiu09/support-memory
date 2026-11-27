@@ -4,12 +4,14 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import sqlite3
 
 from .history import append_turn, encode_window
 from .redact import contains_sensitive_data, redact
 
 
 ACTIVITY_FILENAME = "memory-m2.sqlite3"
+_PAIRED_DATABASE_VERSION = 2
 
 
 class InvalidIdentifier(ValueError):
@@ -20,12 +22,34 @@ class InvalidAccount(InvalidIdentifier):
     """账户标识含有隐私信息。"""
 
 
-def initialize(connection):
+class MissingActivityDatabase(RuntimeError):
+    """已配对的记忆库缺少授权数据。"""
+
+
+def initialize(connection, *, read_table=None):
+    paired = connection.execute("PRAGMA main.user_version").fetchone()[0] >= _PAIRED_DATABASE_VERSION
     databases = {name: path for _, name, path in connection.execute("PRAGMA database_list")}
     if "activity" not in databases:
         main_path = databases["main"]
-        activity_path = str(Path(main_path).with_name(ACTIVITY_FILENAME)) if main_path else ":memory:"
-        connection.execute("ATTACH DATABASE ? AS activity", (activity_path,))
+        activity_path = Path(main_path).with_name(ACTIVITY_FILENAME) if main_path else None
+        if paired and activity_path is not None and not activity_path.exists():
+            raise MissingActivityDatabase
+        connection.execute(
+            "ATTACH DATABASE ? AS activity", (str(activity_path) if activity_path else ":memory:",)
+        )
+    if paired or read_table is not None:
+        tables = {
+            name for (name,) in connection.execute(
+                "SELECT name FROM activity.sqlite_master WHERE type = 'table'"
+            )
+        }
+        if paired and "consent" not in tables:
+            raise MissingActivityDatabase
+        if read_table in tables:
+            if not paired and "consent" in tables:
+                _mark_pair_on_read(connection)
+            return
+
     with transaction(connection):
         connection.execute(
             """
@@ -64,6 +88,22 @@ def initialize(connection):
             )""",
         ):
             connection.execute(f"CREATE TABLE IF NOT EXISTS activity.{definition}")
+        if not paired:
+            connection.execute(f"PRAGMA main.user_version = {_PAIRED_DATABASE_VERSION}")
+
+
+def _mark_pair_on_read(connection):
+    # 查看命令遇到写锁时应立即继续读取。
+    timeout = connection.execute("PRAGMA busy_timeout").fetchone()[0]
+    connection.execute("PRAGMA busy_timeout = 0")
+    try:
+        connection.execute(f"PRAGMA main.user_version = {_PAIRED_DATABASE_VERSION}")
+    except sqlite3.OperationalError as error:
+        message = str(error).lower()
+        if "locked" not in message and "readonly" not in message:
+            raise
+    finally:
+        connection.execute(f"PRAGMA busy_timeout = {timeout}")
 
 
 @contextmanager

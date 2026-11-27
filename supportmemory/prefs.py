@@ -14,9 +14,18 @@ _RULE = re.compile(
     r"|(?P<salutation>叫我))"
 )
 _CLAUSE_END = re.compile(r"[，,。！？!?；;\r\n]|\.(?=\s)")
+_QUOTED_TEXT = r"""(?:‘[^’]*’|“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*')"""
+# Consume complete quote pairs even when they are outside a meaning question.
+_QUOTED_EXAMPLES = re.compile(
+    rf"{_QUOTED_TEXT}(?:[ \t，,、]*(?:(?:和|或|以及|与|及)[ \t，,、]*)?{_QUOTED_TEXT})*"
+    r"(?P<meaning>[\s，,、：:；;]*(?=(?:这句话\s*)?(?:是?(?:什么|啥)意思|怎么理解)))?"
+)
 
 
 def extract_preferences(message):
+    message = _QUOTED_EXAMPLES.sub(
+        lambda match: "，" if match["meaning"] is not None else match[0], message
+    )
     matches = list(_RULE.finditer(message))
     updates = {}
     for index, match in enumerate(matches):
