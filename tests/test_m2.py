@@ -130,6 +130,24 @@ class M2Tests(unittest.TestCase):
         self.chat("回答简短点")
         self.assertEqual(self.preference_rows(), before)
 
+    def test_audit_rejects_a_paired_database_missing_the_audit_table(self):
+        self.chat("叫我小柚")
+        self.assertEqual([event["action"] for event in self.audit()], ["write", "read"])
+        with closing(sqlite3.connect(self.activity)) as connection:
+            connection.execute("DROP TABLE audit")
+        before = (self.database.read_bytes(), self.activity.read_bytes())
+
+        result = self.run_cli("audit", "--account", "A")
+
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("缺少操作记录表", result.stderr)
+        self.assertIn("恢复", result.stderr)
+        with closing(sqlite3.connect(self.activity)) as connection:
+            self.assertIsNone(connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'audit'"
+            ).fetchone())
+        self.assertEqual((self.database.read_bytes(), self.activity.read_bytes()), before)
+
     def test_history_rejects_a_mismatched_restored_database_pair(self):
         self.chat("甲演示报修", session="s1")
         self.assertEqual(self.history(session="s1")["turns"][0]["user"], "甲演示报修")
@@ -239,6 +257,25 @@ class M2Tests(unittest.TestCase):
                 finally:
                     saved_activity.replace(self.activity)
 
+    def test_reported_repair_advice_does_not_change_salutation(self):
+        self.assertEqual(self.chat("叫我小柚"), f"小柚，{A_DEFAULT}")
+        reported_answer = self.chat("维修师傅叫我先拔掉电源。")
+        next_answer = self.chat("列出订单", session="a2")
+        self.assertEqual((reported_answer, next_answer), (f"小柚，{A_DEFAULT}", f"小柚，{A_DEFAULT}"))
+        self.assertEqual(self.chat("以后叫我小青", session="a2"), f"小青，{A_DEFAULT}")
+        self.assertEqual(self.chat("列出订单", session="a3"), f"小青，{A_DEFAULT}")
+        self.assertEqual(self.chat("以后叫我小叶，客服叫我先重启。"), f"小叶，{A_DEFAULT}")
+
+    def test_repair_advice_with_a_time_reference_does_not_change_salutation(self):
+        self.chat("叫我小柚")
+        self.chat("维修师傅刚才叫我先拔掉电源")
+        self.assertEqual(self.chat("列出订单", session="a2"), f"小柚，{A_DEFAULT}")
+
+    def test_polite_salutation_request_to_customer_service_changes_salutation(self):
+        self.chat("叫我小柚")
+        self.chat("以后请客服叫我小青")
+        self.assertEqual(self.chat("列出订单", session="a2"), f"小青，{A_DEFAULT}")
+
     def test_quoted_examples_in_meaning_questions_do_not_set_preferences(self):
         answer = self.chat("帮助里写的‘只看未发货的’是什么意思？")
         shown = json.loads(self.cli("show", "--account", "A"))
@@ -330,6 +367,62 @@ class M2Tests(unittest.TestCase):
                     self.assertNotIn(sensitive, result.stderr + result.stdout)
         for path, original in zip(paths, before, strict=True):
             self.assertTrue(path.read_bytes() == original, f"{path.name} 被修改")
+
+    def test_forget_removes_legacy_sensitive_account_preferences(self):
+        self.create_unversioned_m2_pair("旧版演示报修")
+        account = "青柚花园3栋2单元602室"
+        other_account = "青柚花园3栋2单元603室"
+        mask = "[地址已遮盖]"
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.executemany(
+                "INSERT INTO preferences VALUES (?, ?, ?, '2026-01-01T00:00:00Z')",
+                [(account, "brevity", "short"), (account, "salutation", "小柚"),
+                 (other_account, "brevity", "short"), ("B", "brevity", "short")],
+            )
+        with closing(sqlite3.connect(self.activity)) as connection, connection:
+            connection.executemany(
+                "INSERT INTO session_preferences VALUES (?, 'a1', 'brevity', 'short')",
+                [(account,), ("B",)],
+            )
+
+        self.assertEqual(self.cli("--confirm-legacy-pair", "forget", "--account", account, "--key", "brevity"),
+                         "已清除该账户的 brevity 偏好。")
+        self.assertEqual([(row[0], row[1]) for row in self.preference_rows()],
+                         [("B", "brevity"), (account, "salutation"), (other_account, "brevity")])
+        self.chat("回答简短点", account=mask)
+        self.assertEqual(self.cli("forget", "--account", account), "已清除该账户的全部偏好。")
+        self.assertEqual(self.cli("forget", "--account", other_account), "已清除该账户的全部偏好。")
+        self.assertEqual([(row[0], row[1]) for row in self.preference_rows()],
+                         [("B", "brevity"), (mask, "brevity")])
+        self.assertEqual([event["action"] for event in self.audit(account=mask)], ["write", "read"])
+        with closing(sqlite3.connect(self.activity)) as connection:
+            self.assertEqual(connection.execute("SELECT account FROM session_preferences").fetchall(), [("B",)])
+            stored_accounts = connection.execute("SELECT DISTINCT account FROM audit").fetchall()
+            self.assertEqual(len(stored_accounts), 3)
+            self.assertNotIn((account,), stored_accounts)
+            self.assertNotIn((other_account,), stored_accounts)
+        with closing(sqlite3.connect(self.database)) as connection:
+            store.initialize(connection, read_table="audit")
+            self.assertEqual([tuple(event.values())[:4] for event in store.read_audit(connection, account)], [
+                (mask, None, "brevity", "delete"),
+                (mask, "a1", "brevity", "delete"),
+                (mask, None, "salutation", "delete"),
+            ])
+            self.assertEqual([tuple(event.values())[:4] for event in store.read_audit(connection, other_account)],
+                             [(mask, None, "brevity", "delete")])
+
+    def test_forget_removes_a_legacy_account_with_only_a_session_preference(self):
+        self.create_unversioned_m2_pair("旧版演示报修")
+        account = "青柚花园3栋2单元602室"
+        with closing(sqlite3.connect(self.activity)) as connection, connection:
+            connection.execute("INSERT INTO consent VALUES (?, 0)", (account,))
+            connection.execute("INSERT INTO session_preferences VALUES (?, 'a1', 'brevity', 'short')", (account,))
+        self.assertEqual(self.preference_rows(), [])
+
+        self.assertEqual(self.cli("--confirm-legacy-pair", "forget", "--account", account),
+                         "已清除该账户的全部偏好。")
+        with closing(sqlite3.connect(self.activity)) as connection:
+            self.assertEqual(connection.execute("SELECT * FROM session_preferences").fetchall(), [])
 
     def test_forget_does_not_copy_an_old_sensitive_session_identifier_into_audit(self):
         self.cli("consent", "--account", "A", "off")

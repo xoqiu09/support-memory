@@ -14,8 +14,10 @@ from .store import (
     InvalidIdentifier,
     MismatchedDatabasePair,
     MissingActivityDatabase,
+    MissingAuditTable,
     UnconfirmedLegacyPair,
     forget,
+    has_legacy_preferences,
     initialize,
     read_audit,
     read_history,
@@ -197,7 +199,11 @@ def main():
         return
 
     try:
-        validate_identifiers(args.account, getattr(args, "session", None))
+        try:
+            validate_identifiers(args.account, getattr(args, "session", None))
+        except InvalidIdentifier:
+            if args.command != "forget" or not has_legacy_preferences(_DATABASE_PATH, args.account):
+                raise
         with closing(sqlite3.connect(_DATABASE_PATH)) as connection:
             read_table = args.command if args.command in {"history", "audit"} else None
             initialize(connection, read_table=read_table, confirm_legacy_pair=args.confirm_legacy_pair)
@@ -227,6 +233,8 @@ def main():
         parser.exit(1, f"{error}\n")
     except MissingActivityDatabase:
         parser.exit(1, "记忆数据库缺少授权记录。请从同一备份恢复 memory-m2.sqlite3，再重试。\n")
+    except MissingAuditTable:
+        parser.exit(1, "记忆数据库缺少操作记录表。请从同一备份恢复 memory-m2.sqlite3，再重试。\n")
     except MismatchedDatabasePair:
         parser.exit(1, "两份记忆数据库不配套。请从同一备份恢复两份文件，再重试。\n")
     except UnconfirmedLegacyPair:

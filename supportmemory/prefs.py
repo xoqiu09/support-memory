@@ -5,13 +5,15 @@ import re
 
 PREFERENCE_KEYS = ("order_filter", "brevity", "salutation")
 
+_SALUTATION_SPEAKER = r"(?:维修师傅|师傅|客服|维修人员)"
 _RULE = re.compile(
     r"(?P<negated>(?:不要|不用|不必|不想|别|不)\s*)?(?:"
     r"只看\s*(?P<filter>未发货|已发货)"
     r"|(?P<all>看\s*全部订单)"
     r"|(?P<short>(?:回答\s*)?简短点)"
     r"|(?P<long>(?:回答\s*)?详细一点)"
-    r"|(?P<salutation>叫我))"
+    rf"|(?P<reported_salutation>{_SALUTATION_SPEAKER}\s*(?:(?:刚才|刚刚|之前|先前|刚)\s*)?叫我)"
+    rf"|(?P<salutation>(?:请\s*{_SALUTATION_SPEAKER}\s*)?叫我))"
 )
 _CLAUSE_END = re.compile(r"[，,。！？!?；;\r\n]|\.(?=\s)")
 _QUOTED_TEXT = r"""(?:‘[^’]*’|“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*')"""
@@ -29,7 +31,7 @@ def extract_preferences(message):
     matches = list(_RULE.finditer(message))
     updates = {}
     for index, match in enumerate(matches):
-        if match["negated"]:
+        if match["negated"] or match["reported_salutation"]:
             continue
         if match.lastgroup == "filter":
             updates["order_filter"] = (
