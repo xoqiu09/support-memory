@@ -16,6 +16,8 @@ _RULE = re.compile(
     rf"|(?P<salutation>(?:请\s*{_SALUTATION_SPEAKER}\s*)?叫我))"
 )
 _CLAUSE_END = re.compile(r"[，,。！？!?；;\r\n]|\.(?=\s)")
+_DETAIL_COMPARISON = re.compile(r"\S\s*(?<!性价)比(?![如较例]|方说)\s*\S.*详细一点$")
+_POLITE_REQUEST_PREFIX = re.compile(r"^\s*请\s*(?:[你您]\s*)?")
 _QUOTED_TEXT = r"""(?:‘[^’]*’|“[^”]*”|「[^」]*」|『[^』]*』|"[^"]*"|'[^']*')"""
 # Consume complete quote pairs even when they are outside a meaning question.
 _QUOTED_EXAMPLES = re.compile(
@@ -42,7 +44,9 @@ def extract_preferences(message):
         elif match.lastgroup == "short":
             updates["brevity"] = "short"
         elif match.lastgroup == "long":
-            updates["brevity"] = "long"
+            clause = _CLAUSE_END.split(message[:match.end()])[-1]
+            if not _DETAIL_COMPARISON.search(_POLITE_REQUEST_PREFIX.sub("", clause)):
+                updates["brevity"] = "long"
         else:
             end = matches[index + 1].start() if index + 1 < len(matches) else len(message)
             salutation = _CLAUSE_END.split(message[match.end():end], maxsplit=1)[0].strip()

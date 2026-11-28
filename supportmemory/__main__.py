@@ -12,6 +12,7 @@ from .prefs import PREFERENCE_KEYS
 from .redact import contains_sensitive_data
 from .store import (
     ACTIVITY_FILENAME,
+    InvalidConsentValue,
     InvalidIdentifier,
     MismatchedDatabasePair,
     MissingActivityDatabase,
@@ -249,6 +250,8 @@ def main():
         parser.error(str(error))
     except InvalidOrderStatus as error:
         parser.exit(1, f"{error}\n")
+    except InvalidConsentValue:
+        parser.exit(1, "跨会话偏好保存的授权值无效。请检查记忆数据库中的授权记录。\n")
     except MissingActivityDatabase:
         parser.exit(1, "记忆数据库缺少授权记录。请从同一备份恢复 memory-m2.sqlite3，再重试。\n")
     except MissingAuditTable:
