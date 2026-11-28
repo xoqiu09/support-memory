@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
-from supportmemory import store
+from supportmemory import bot, store
 from supportmemory import __main__ as cli
 
 from .test_acceptance import A_DEFAULT, A_FILTERED, B_DEFAULT, PROJECT
@@ -82,6 +82,21 @@ class M2Tests(unittest.TestCase):
             """)
             window = {"summary": [], "turns": [{"user": message, "reply": "好", "preferences": {}}]}
             connection.execute("INSERT INTO history VALUES ('A', 'a1', ?)", (json.dumps(window),))
+    def test_unknown_order_status_is_reported_before_filtering(self):
+        orders_path = self.workdir / "data/orders.json"
+        orders = json.loads(orders_path.read_text(encoding="utf-8"))
+        orders["A"][0]["status"] = "shiped"
+        orders_path.write_text(json.dumps(orders, ensure_ascii=False), encoding="utf-8")
+
+        result = self.run_cli("chat", "--account", "A", "--session", "a1", "只看已发货的")
+
+        self.assertEqual(result.returncode, 1, result.stdout or result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "订单 A-101 的状态无法识别。\n")
+        self.assertEqual(self.preference_rows(), [])
+        self.assertEqual(self.history(), {"summary": [], "turns": []})
+        self.assertEqual(self.audit(), [])
+        self.assertEqual(self.chat("列出订单", account="B"), B_DEFAULT)
 
     def test_consent_off_keeps_new_preferences_in_one_session(self):
         self.cli("consent", "--account", "A", "off")
@@ -537,6 +552,40 @@ class M2Tests(unittest.TestCase):
         self.chat("回答简短点", account="B")
         self.assertEqual({event["account"] for event in self.audit("A")}, {"A"})
         self.assertEqual({event["account"] for event in self.audit("B")}, {"B"})
+
+    def test_chat_timestamps_follow_write_order_when_messages_interleave(self):
+        first_started = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        second_written = first_started + timedelta(seconds=1)
+        first_written = first_started + timedelta(seconds=2)
+
+        def finish_second_chat_before_first_write(connection):
+            clock.now.return_value = second_written
+            with (
+                patch.object(bot, "transaction", store.transaction),
+                patch.object(sys, "argv", ["supportmemory", "chat", "--account", "A", "--session", "a2", "叫我小乙"]),
+            ):
+                cli.main()
+            clock.now.return_value = first_written
+            return store.transaction(connection)
+
+        with (
+            patch.object(cli, "_ORDERS_PATH", self.workdir / "data/orders.json"),
+            patch.object(cli, "_DATABASE_PATH", self.database),
+            patch.object(sys, "argv", ["supportmemory", "chat", "--account", "A", "--session", "a1", "叫我小甲"]),
+            patch.object(store, "datetime", wraps=datetime) as clock,
+            patch.object(bot, "transaction", side_effect=finish_second_chat_before_first_write),
+            patch("builtins.print"),
+        ):
+            clock.now.return_value = first_started
+            cli.main()
+
+        events = self.audit()
+        writes = [event for event in events if event["action"] == "write"]
+        self.assertEqual([event["session"] for event in writes], ["a2", "a1"])
+        self.assertLess(writes[0]["time"], writes[1]["time"])
+        self.assertEqual([event["time"] for event in events], [writes[0]["time"]] * 2 + [writes[1]["time"]] * 2)
+        preferences = json.loads(self.cli("show", "--account", "A"))
+        self.assertEqual(preferences["salutation"], {"value": "小甲", "written_at": writes[1]["time"]})
 
     def test_history_and_audit_can_read_while_another_connection_is_ready_to_write(self):
         message = "以后只看未发货的"

@@ -9,6 +9,7 @@ from .store import (
     read_session_preferences,
     record_turn,
     transaction,
+    utc_now,
     validate_identifiers,
     write_preferences,
     write_session_preferences,
@@ -18,14 +19,26 @@ from .store import (
 _STATUS = {"shipped": "已发货", "unshipped": "未发货"}
 
 
-def chat(connection, orders, account, message, written_at, session=None):
+class InvalidOrderStatus(ValueError):
+    """订单状态无法识别。"""
+
+
+def chat(connection, orders, account, message, written_at=None, session=None):
     validate_identifiers(account, session)
+    account_orders = orders.get(account, [])
+    for order in account_orders:
+        status = order.get("status")
+        if not isinstance(status, str) or status not in _STATUS:
+            raise InvalidOrderStatus(f'订单 {order["id"]} 的状态无法识别。')
+
     updates = {
         key: redact(value) if value is not None else None
         for key, value in extract_preferences(message).items()
     }
 
     with transaction(connection):
+        if written_at is None:
+            written_at = utc_now()
         if updates:
             if consent_enabled(connection, account):
                 # 保留原来的无会话调用方式。
@@ -41,7 +54,7 @@ def chat(connection, orders, account, message, written_at, session=None):
         preferences = read_preferences(connection, account, session, written_at)
         if session is not None:
             preferences.update(read_session_preferences(connection, account, session, written_at))
-        answer = _reply(orders.get(account, []), preferences)
+        answer = _reply(account_orders, preferences)
         if session is not None:
             record_turn(connection, account, session, message, answer, updates)
         return answer
