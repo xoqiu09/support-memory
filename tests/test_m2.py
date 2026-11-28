@@ -26,10 +26,10 @@ class M2Tests(unittest.TestCase):
         self.activity = self.workdir / "memory-m2.sqlite3"
         shutil.copytree(PROJECT / "data", self.workdir / "data")
 
-    def run_cli(self, *arguments):
+    def run_cli(self, *arguments, workdir=None):
         return subprocess.run(
             [sys.executable, "-m", "supportmemory", *arguments],
-            cwd=self.workdir,
+            cwd=workdir or self.workdir,
             env={**os.environ, "PYTHONPATH": str(PROJECT)},
             capture_output=True,
             encoding="utf-8",
@@ -53,6 +53,35 @@ class M2Tests(unittest.TestCase):
     def preference_rows(self):
         with closing(sqlite3.connect(self.database)) as connection:
             return connection.execute("SELECT * FROM preferences ORDER BY account, key").fetchall()
+
+    def create_unversioned_m2_pair(self, message):
+        # M2 最初的两份库没有配对表，也没有设置 user_version。
+        with closing(sqlite3.connect(self.database)) as connection:
+            connection.execute("""
+                CREATE TABLE preferences (
+                    account TEXT NOT NULL, key TEXT NOT NULL, value TEXT NOT NULL,
+                    written_at TEXT NOT NULL, PRIMARY KEY (account, key)
+                )
+            """)
+        with closing(sqlite3.connect(self.activity)) as connection, connection:
+            connection.executescript("""
+                CREATE TABLE consent (account TEXT PRIMARY KEY, enabled INTEGER NOT NULL);
+                CREATE TABLE session_preferences (
+                    account TEXT NOT NULL, session TEXT NOT NULL, key TEXT NOT NULL,
+                    value TEXT, PRIMARY KEY (account, session, key)
+                );
+                CREATE TABLE history (
+                    account TEXT NOT NULL, session TEXT NOT NULL, window TEXT NOT NULL,
+                    PRIMARY KEY (account, session)
+                );
+                CREATE TABLE audit (
+                    id INTEGER PRIMARY KEY, account TEXT NOT NULL, session TEXT,
+                    key TEXT NOT NULL, action TEXT NOT NULL, time TEXT NOT NULL
+                );
+                INSERT INTO consent VALUES ('A', 0);
+            """)
+            window = {"summary": [], "turns": [{"user": message, "reply": "好", "preferences": {}}]}
+            connection.execute("INSERT INTO history VALUES ('A', 'a1', ?)", (json.dumps(window),))
 
     def test_consent_off_keeps_new_preferences_in_one_session(self):
         self.cli("consent", "--account", "A", "off")
@@ -86,6 +115,88 @@ class M2Tests(unittest.TestCase):
         self.chat("回答简短点")
         self.assertEqual(self.preference_rows(), before)
 
+    def test_history_rejects_a_mismatched_restored_database_pair(self):
+        self.chat("甲演示报修", session="s1")
+        self.assertEqual(self.history(session="s1")["turns"][0]["user"], "甲演示报修")
+        other = self.workdir / "other"
+        shutil.copytree(PROJECT / "data", other / "data")
+        result = self.run_cli("chat", "--account", "A", "--session", "s1", "乙演示报修", workdir=other)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        original = self.activity.read_bytes()
+        shutil.copyfile(other / self.activity.name, self.activity)
+        before = (self.database.read_bytes(), self.activity.read_bytes())
+
+        for options in ((), ("--confirm-legacy-pair",)):
+            with self.subTest(options=options):
+                result = self.run_cli(*options, "history", "--account", "A", "--session", "s1")
+                self.assertEqual((result.returncode, result.stdout), (1, ""))
+                self.assertIn("两份记忆数据库不配套", result.stderr)
+                self.assertNotIn("乙演示报修", result.stderr)
+        self.assertEqual((self.database.read_bytes(), self.activity.read_bytes()), before)
+
+        self.activity.write_bytes(original)
+        self.assertEqual(self.history(session="s1")["turns"][0]["user"], "甲演示报修")
+
+    def test_legacy_database_pair_requires_confirmation_before_migration(self):
+        self.chat("旧版演示报修")
+        for path in (self.database, self.activity):
+            with closing(sqlite3.connect(path)) as connection:
+                connection.execute("DROP TABLE IF EXISTS database_pair")
+        before = (self.database.read_bytes(), self.activity.read_bytes())
+        arguments = ("history", "--account", "A", "--session", "a1")
+
+        result = self.run_cli(*arguments)
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("--confirm-legacy-pair", result.stderr)
+        self.assertEqual((self.database.read_bytes(), self.activity.read_bytes()), before)
+
+        confirmed = json.loads(self.cli("--confirm-legacy-pair", *arguments))
+        self.assertEqual(confirmed["turns"][0]["user"], "旧版演示报修")
+        self.assertEqual(self.history(), confirmed)
+
+    def test_unversioned_m2_pair_requires_confirmation_before_migration(self):
+        self.create_unversioned_m2_pair("最初版演示报修")
+        before = (self.database.read_bytes(), self.activity.read_bytes())
+        arguments = ("history", "--account", "A", "--session", "a1")
+
+        result = self.run_cli(*arguments)
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("--confirm-legacy-pair", result.stderr)
+        self.assertEqual((self.database.read_bytes(), self.activity.read_bytes()), before)
+
+        confirmed = json.loads(self.cli("--confirm-legacy-pair", *arguments))
+        self.assertEqual(confirmed["turns"][0]["user"], "最初版演示报修")
+        self.assertEqual(self.history(), confirmed)
+        self.chat("回答简短点")
+        self.assertEqual(self.preference_rows(), [])
+
+    def test_reversed_m2_database_files_are_rejected_without_writes(self):
+        for numbered in (False, True):
+            with self.subTest(numbered=numbered):
+                if numbered:
+                    self.chat("演示报修")
+                    self.cli("consent", "--account", "A", "off")
+                else:
+                    self.create_unversioned_m2_pair("演示报修")
+
+                preferences = self.database.read_bytes()
+                activity = self.activity.read_bytes()
+                self.database.write_bytes(activity)
+                self.activity.write_bytes(preferences)
+                try:
+                    for arguments in (
+                        ("history", "--account", "A", "--session", "a1"),
+                        ("--confirm-legacy-pair", "chat", "--account", "A", "--session", "a1", "回答简短点"),
+                    ):
+                        result = self.run_cli(*arguments)
+                        self.assertEqual((result.returncode, result.stdout), (1, ""))
+                        self.assertIn("两份记忆数据库不配套", result.stderr)
+                        self.assertEqual((self.database.read_bytes(), self.activity.read_bytes()),
+                                         (activity, preferences))
+                finally:
+                    self.database.unlink()
+                    self.activity.unlink()
+
     def test_reading_existing_m2_database_marks_it_paired_before_a_partial_restore(self):
         self.chat("以后只看未发货的")
         self.cli("consent", "--account", "A", "off")
@@ -94,7 +205,7 @@ class M2Tests(unittest.TestCase):
             ("audit", ("--account", "A")),
         ):
             with self.subTest(command=command):
-                # 旧版 M2 的表结构相同，但没有设置主库的版本号。
+                # 模拟已配对主库丢失版本号，查看时应补回。
                 with closing(sqlite3.connect(self.database)) as connection:
                     connection.execute("PRAGMA user_version = 0")
                 self.cli(command, *arguments)
@@ -171,6 +282,15 @@ class M2Tests(unittest.TestCase):
         self.chat("以后只看未发货的")
         self.assertEqual(self.chat("列出订单", session="a2"), A_FILTERED)
 
+    def test_account_preference_update_clears_only_the_same_key_from_old_sessions(self):
+        self.cli("consent", "--account", "A", "off")
+        self.chat("只看未发货的，叫我小青")
+        self.cli("consent", "--account", "A", "on")
+
+        shipped = "按你的设置，只列已发货订单\nA-101（已发货）"
+        self.assertEqual(self.chat("以后只看已发货的", session="a2"), shipped)
+        self.assertEqual(self.chat("列出订单"), f"小青，{shipped}")
+
     def test_sensitive_account_and_session_identifiers_are_rejected(self):
         paths = (self.database, self.activity)
         with self.subTest(command="首次 forget"):
@@ -225,6 +345,26 @@ class M2Tests(unittest.TestCase):
         ])
         self.assertEqual(window, self.history())
         self.assertEqual(self.history(session="a2"), {"summary": [], "turns": []})
+
+    def test_building_address_is_redacted_in_history_and_summary(self):
+        address = "3栋2单元602室"
+        mask = "[地址已遮盖]"
+        for index, (message, expected) in enumerate((
+            (f"收货地址是青柚花园{address}", f"收货地址是{mask}"),
+            (f"收货地址是青柚小区{address}", f"收货地址是{mask}"),
+            (f"订单A-101 {address}", f"订单A-101 {mask}"),
+            (f"请先修洗衣机\n{address}", f"请先修洗衣机\n{mask}"),
+            (f"手机号138 1234 5678 {address}", f"手机号[手机号已遮盖] {mask}"),
+        )):
+            with self.subTest(message=message):
+                session = f"address-{index}"
+                self.chat(message, session=session)
+                first_turn = self.history(session=session)["turns"][0]["user"]
+                for _ in range(6):
+                    self.chat("好", session=session)
+                first_summary = self.history(session=session)["summary"][0]["user"]
+
+                self.assertEqual((first_turn, first_summary), (expected, expected))
 
     def test_history_budget_holds_after_every_one_of_30_turns(self):
         for index in range(1, 31):

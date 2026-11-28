@@ -4,11 +4,22 @@ import re
 
 
 _DIGIT = r"[0-9０-９]"
-_ADDRESS_NUMBER = rf"[A-Za-z]?[0-9０-９一二三四五六七八九十零〇]+(?:-{_DIGIT}+)?"
+_ADDRESS_DIGIT = r"[0-9０-９一二三四五六七八九十零〇]"
+_ADDRESS_NUMBER = rf"[A-Za-z]?{_ADDRESS_DIGIT}+(?:-{_DIGIT}+)?"
 _ADDRESS_UNIT = r"(?:号院|号楼|号|栋|幢|座|楼|室|单元)"
-_ADDRESS = re.compile(
-    r"[\u4e00-\u9fffA-Za-z0-9·-]{1,64}(?:大道|街道|路|街|巷|弄|小区|村|镇|乡|区|县)"
+_PLACE_NAME = r"[\u4e00-\u9fffA-Za-z0-9·-]"
+_NAMED_ADDRESS = (
+    rf"{_PLACE_NAME}{{1,64}}(?:大道|街道|路|街|巷|弄|小区|村|镇|乡|区|县)"
     rf"(?:\s*{_ADDRESS_NUMBER}\s*{_ADDRESS_UNIT})+"
+)
+_BUILDING_ADDRESS = (
+    rf"{_ADDRESS_NUMBER}\s*(?:栋|幢)\s*{_ADDRESS_NUMBER}\s*单元\s*{_ADDRESS_NUMBER}\s*室"
+)
+_ADDRESS = re.compile(
+    r"(?P<label>[\u4e00-\u9fff]{0,64}?地址(?:是|为|[：:])\s*)"
+    rf"(?:{_NAMED_ADDRESS}|{_PLACE_NAME}{{0,64}}?\s*{_BUILDING_ADDRESS})"
+    rf"|{_NAMED_ADDRESS}"
+    rf"|(?:{_PLACE_NAME}{{1,64}}花园\s*)?(?<!{_ADDRESS_DIGIT}){_BUILDING_ADDRESS}"
 )
 _ID_NUMBER = re.compile(rf"(?<!{_DIGIT})(?:{_DIGIT}{{17}}[0-9０-９XxＸｘ]|{_DIGIT}{{15}})(?!{_DIGIT})")
 _PHONE_NUMBER = re.compile(
@@ -25,6 +36,6 @@ def contains_sensitive_data(text):
 
 
 def redact(text):
-    text = _ADDRESS.sub("[地址已遮盖]", text)
     text = _ID_NUMBER.sub("[身份证号已遮盖]", text)
-    return _PHONE_NUMBER.sub("[手机号已遮盖]", text)
+    text = _PHONE_NUMBER.sub("[手机号已遮盖]", text)
+    return _ADDRESS.sub(r"\g<label>[地址已遮盖]", text)
