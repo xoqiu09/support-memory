@@ -1,7 +1,8 @@
 """按账户存取偏好、会话和审计记录。"""
 
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timezone
+from hashlib import sha256
 import json
 from pathlib import Path
 import sqlite3
@@ -25,6 +26,10 @@ class InvalidAccount(InvalidIdentifier):
 
 class MissingActivityDatabase(RuntimeError):
     """已配对的记忆库缺少授权数据。"""
+
+
+class MissingAuditTable(RuntimeError):
+    """已配对的记忆库缺少操作记录表。"""
 
 
 class MismatchedDatabasePair(RuntimeError):
@@ -58,6 +63,8 @@ def _check_database_pair(connection, confirm_legacy_pair):
         )
         if len(main_id) != 1 or not main_id[0][0] or main_id != activity_id:
             raise MismatchedDatabasePair
+        if "audit" not in activity_tables:
+            raise MissingAuditTable
         return True, activity_tables
 
     if "consent" in activity_tables:
@@ -174,6 +181,28 @@ def validate_identifiers(account, session=None):
         raise InvalidIdentifier("会话标识不能包含手机号、身份证号或详细地址。")
 
 
+def has_legacy_preferences(database_path, account):
+    # 校验未通过时先只读查找旧偏好，避免为陌生的敏感标识创建数据库。
+    database_path = database_path.resolve()
+    if not database_path.is_file():
+        return False
+    for path, table in (
+        (database_path, "preferences"),
+        (database_path.with_name(ACTIVITY_FILENAME), "session_preferences"),
+    ):
+        if not path.is_file():
+            continue
+        with closing(sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True)) as connection:
+            table_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+            ).fetchone()
+            if table_exists and connection.execute(
+                f"SELECT 1 FROM {table} WHERE account = ? LIMIT 1", (account,)
+            ).fetchone():
+                return True
+    return False
+
+
 def consent_enabled(connection, account):
     row = connection.execute(
         "SELECT enabled FROM activity.consent WHERE account = ?", (account,)
@@ -192,23 +221,32 @@ def set_consent(connection, account, enabled):
     )
 
 
+def _audit_account_key(account):
+    if contains_sensitive_data(account):
+        # SQLite 将摘要存为 BLOB，与普通账户使用的 TEXT 分开。
+        return sha256(account.encode("utf-8")).digest()
+    return account
+
+
 def _record_audit(connection, account, session, keys, action, time):
-    validate_identifiers(account, session)
+    validate_identifiers(redact(account) if action == "delete" else account, session)
+    account_key = _audit_account_key(account)
     connection.executemany(
         """
         INSERT INTO activity.audit (account, session, key, action, time) VALUES (?, ?, ?, ?, ?)
         """,
-        ((account, session, key, action, time) for key in keys),
+        ((account_key, session, key, action, time) for key in keys),
     )
 
 
 def read_audit(connection, account):
     rows = connection.execute(
-        "SELECT account, session, key, action, time FROM activity.audit WHERE account = ? ORDER BY id",
-        (account,),
+        "SELECT session, key, action, time FROM activity.audit WHERE account = ? ORDER BY id",
+        (_audit_account_key(account),),
     )
+    display_account = redact(account)
     fields = ("account", "session", "key", "action", "time")
-    return [dict(zip(fields, row)) for row in rows]
+    return [dict(zip(fields, (display_account, *row))) for row in rows]
 
 
 def read_preferences(connection, account, session=None, time=None):
@@ -224,19 +262,21 @@ def read_preferences(connection, account, session=None, time=None):
         return preferences
 
 
+def _delete_preference(connection, account, key, time, session=None):
+    deleted = connection.execute(
+        "DELETE FROM preferences WHERE account = ? AND key = ?", (account, key)
+    ).rowcount
+    if deleted:
+        _record_audit(connection, account, session, (key,), "delete", time or utc_now())
+
+
 def write_preferences(connection, account, updates, written_at, session=None):
     validate_identifiers(account, session)
 
     with transaction(connection):
         for key, value in updates.items():
             if value is None:
-                deleted = connection.execute(
-                    "DELETE FROM preferences WHERE account = ? AND key = ?",
-                    (account, key),
-                ).rowcount
-                if not deleted:
-                    continue
-                action = "delete"
+                _delete_preference(connection, account, key, written_at, session)
             else:
                 connection.execute(
                     """
@@ -248,8 +288,7 @@ def write_preferences(connection, account, updates, written_at, session=None):
                     """,
                     (account, key, value, written_at),
                 )
-                action = "write"
-            _record_audit(connection, account, session, (key,), action, written_at or utc_now())
+                _record_audit(connection, account, session, (key,), "write", written_at or utc_now())
 
 
 def read_session_preferences(connection, account, session, time):
@@ -279,6 +318,10 @@ def write_session_preferences(connection, account, session, updates, time):
 
 def delete_session_preferences(connection, account, time, session=None, key=None):
     validate_identifiers(account, session)
+    _delete_session_preferences(connection, account, time, session, key)
+
+
+def _delete_session_preferences(connection, account, time, session=None, key=None):
     rows = connection.execute(
         """
         SELECT session, key FROM activity.session_preferences
@@ -297,7 +340,6 @@ def delete_session_preferences(connection, account, time, session=None, key=None
 
 
 def forget(connection, account, key, time=None):
-    validate_account(account)
     time = time or utc_now()
     with transaction(connection):
         if key is None:
@@ -307,8 +349,9 @@ def forget(connection, account, key, time=None):
             keys = [row[0] for row in rows]
         else:
             keys = [key]
-        write_preferences(connection, account, dict.fromkeys(keys), time)
-        delete_session_preferences(connection, account, time, key=key)
+        for preference_key in keys:
+            _delete_preference(connection, account, preference_key, time)
+        _delete_session_preferences(connection, account, time, key=key)
 
 
 def read_history(connection, account, session):
