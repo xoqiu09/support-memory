@@ -188,6 +188,8 @@ def main():
 
     if args.command != "export" and not args.account.strip():
         parser.error("账户不能为空。")
+    if args.command in {"chat", "history"} and not args.session.strip():
+        parser.error("会话不能为空。")
 
     if args.command in {"chat", "export"}:
         try:

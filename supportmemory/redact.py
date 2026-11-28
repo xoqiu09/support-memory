@@ -36,10 +36,8 @@ def contains_sensitive_data(text):
 
 
 def _mask_address(match):
-    prefix = match["label"] or ""
-    if match["delivery"]:
-        prefix = _ADDRESS.sub(_mask_address, match["delivery"])
-    return prefix + "[地址已遮盖]"
+    prefix = match["label"] or match["delivery"] or ""
+    return _ADDRESS.sub(_mask_address, prefix) + "[地址已遮盖]"
 
 
 def redact(text):
