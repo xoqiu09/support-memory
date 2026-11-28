@@ -7,7 +7,7 @@ from pathlib import Path
 import sqlite3
 from tempfile import NamedTemporaryFile
 
-from .bot import chat
+from .bot import InvalidOrderStatus, chat
 from .prefs import PREFERENCE_KEYS
 from .store import (
     ACTIVITY_FILENAME,
@@ -22,7 +22,6 @@ from .store import (
     read_preferences,
     set_consent,
     transaction,
-    utc_now,
     validate_identifiers,
 )
 
@@ -203,7 +202,7 @@ def main():
             read_table = args.command if args.command in {"history", "audit"} else None
             initialize(connection, read_table=read_table, confirm_legacy_pair=args.confirm_legacy_pair)
             if args.command == "chat":
-                print(chat(connection, orders, args.account, args.message, utc_now(), args.session))
+                print(chat(connection, orders, args.account, args.message, session=args.session))
             elif args.command == "forget":
                 forget(connection, args.account, args.key)
                 if args.key is None:
@@ -224,6 +223,8 @@ def main():
                 print(json.dumps(preferences, ensure_ascii=False, indent=2))
     except InvalidIdentifier as error:
         parser.error(str(error))
+    except InvalidOrderStatus as error:
+        parser.exit(1, f"{error}\n")
     except MissingActivityDatabase:
         parser.exit(1, "记忆数据库缺少授权记录。请从同一备份恢复 memory-m2.sqlite3，再重试。\n")
     except MismatchedDatabasePair:
