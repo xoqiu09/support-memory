@@ -146,6 +146,23 @@ class M2Tests(unittest.TestCase):
         self.assertEqual(self.chat("列出订单", account="B", session="a2"),
                          "按默认设置，列出全部订单，使用简短回答\nB-201、B-202")
 
+    def test_invalid_restored_consent_blocks_preference_writes(self):
+        self.cli("consent", "--account", "A", "off")
+        with closing(sqlite3.connect(self.activity)) as connection, connection:
+            connection.execute("UPDATE consent SET enabled = 'off' WHERE account = 'A'")
+
+        result = self.run_cli("chat", "--account", "A", "--session", "a1", "只看未发货的")
+
+        with self.subTest(check="cli"):
+            self.assertEqual(result.returncode, 1, result.stdout or result.stderr)
+            self.assertEqual(result.stdout, "")
+            self.assertEqual(result.stderr, "跨会话偏好保存的授权值无效。请检查记忆数据库中的授权记录。\n")
+        with self.subTest(check="preferences"):
+            self.assertEqual({row[1] for row in self.preference_rows()}, set())
+        with self.subTest(check="history"):
+            self.assertEqual(self.history(), {"summary": [], "turns": []})
+            self.assertEqual(self.audit(), [])
+
     def test_missing_activity_database_does_not_reenable_consent(self):
         self.chat("以后只看未发货的")
         self.cli("consent", "--account", "A", "off")
@@ -288,6 +305,37 @@ class M2Tests(unittest.TestCase):
                     self.assertFalse(self.activity.exists())
                 finally:
                     saved_activity.replace(self.activity)
+
+    def test_detail_comparison_does_not_change_brevity(self):
+        comparisons = (
+            "纸质说明书比电子版详细一点。",
+            "安装手册比方案书详细一点",
+            "纸质说明书比客服的回答详细一点",
+            "请问纸质说明书比电子版详细一点吗？",
+        )
+        for index, comparison in enumerate(comparisons):
+            with self.subTest(comparison=comparison):
+                self.chat("回答简短点")
+                before = self.preference_rows()
+                self.chat(comparison)
+
+                with self.subTest(check="preferences"):
+                    self.assertEqual(self.preference_rows(), before)
+                with self.subTest(check="new session"):
+                    self.assertEqual(
+                        self.chat("列出订单", session=f"comparison-{index}"),
+                        "按默认设置，列出全部订单，使用简短回答\nA-101、A-102",
+                    )
+
+    def test_explicit_detail_request_changes_brevity_across_sessions(self):
+        requests = ("详细一点", "回答详细一点", "请比上次详细一点", "请把性价比讲得详细一点")
+        for index, request in enumerate(requests):
+            with self.subTest(request=request):
+                self.chat("回答简短点")
+                answer = self.chat(request)
+                next_answer = self.chat("列出订单", session=f"request-{index}")
+                self.assertIn("使用详细回答", next_answer)
+                self.assertEqual(answer, next_answer)
 
     def test_reported_repair_advice_does_not_change_salutation(self):
         self.assertEqual(self.chat("叫我小柚"), f"小柚，{A_DEFAULT}")
@@ -871,6 +919,29 @@ class M2Tests(unittest.TestCase):
         self.assertIn("steps", json.loads(first.read_text(encoding="utf-8")))
         self.assertIn("consent", json.loads(second.read_text(encoding="utf-8")))
         self.assertEqual(set(first.parent.iterdir()), {first, second, first.parent / "data"})
+
+    def test_legacy_salutations_are_redacted_when_read(self):
+        address = "青禾花园2栋1单元306室"
+        written_at = "2026-01-01T00:00:00Z"
+        self.create_unversioned_m2_pair("旧对话")
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute(
+                "INSERT INTO preferences VALUES ('A', 'salutation', ?, ?)",
+                (f"小柚 {address}", written_at),
+            )
+        with closing(sqlite3.connect(self.activity)) as connection, connection:
+            connection.execute(
+                "INSERT INTO session_preferences VALUES ('A', 'a1', 'salutation', ?)",
+                (f"会话小柚 {address}",),
+            )
+
+        with self.subTest(command="show"):
+            shown = json.loads(self.cli("--confirm-legacy-pair", "show", "--account", "A"))
+            self.assertEqual(shown["salutation"], {"value": "小柚 [地址已遮盖]", "written_at": written_at})
+        with self.subTest(session="new"):
+            self.assertEqual(self.chat("列出订单", session="new"), f"小柚 [地址已遮盖]，{A_DEFAULT}")
+        with self.subTest(session="a1"):
+            self.assertEqual(self.chat("列出订单"), f"会话小柚 [地址已遮盖]，{A_DEFAULT}")
 
     def test_existing_m1_database_opens_with_preferences_and_default_consent(self):
         with closing(sqlite3.connect(self.database)) as connection, connection:

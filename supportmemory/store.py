@@ -28,6 +28,10 @@ class MissingActivityDatabase(RuntimeError):
     """已配对的记忆库缺少授权数据。"""
 
 
+class InvalidConsentValue(RuntimeError):
+    """记忆库中的授权值无效。"""
+
+
 class MissingAuditTable(RuntimeError):
     """已配对的记忆库缺少操作记录表。"""
 
@@ -207,7 +211,12 @@ def consent_enabled(connection, account):
     row = connection.execute(
         "SELECT enabled FROM activity.consent WHERE account = ?", (account,)
     ).fetchone()
-    return row is None or bool(row[0])
+    if row is None:
+        return True
+    enabled = row[0]
+    if type(enabled) is not int or enabled not in (0, 1):
+        raise InvalidConsentValue
+    return enabled == 1
 
 
 def set_consent(connection, account, enabled):
@@ -256,7 +265,8 @@ def read_preferences(connection, account, session=None, time=None):
             (account,),
         )
         preferences = {
-            key: {"value": value, "written_at": written_at} for key, value, written_at in rows
+            key: {"value": redact(value) if key == "salutation" else value, "written_at": written_at}
+            for key, value, written_at in rows
         }
         _record_audit(connection, account, session, preferences, "read", time or utc_now())
         return preferences
@@ -299,7 +309,10 @@ def read_session_preferences(connection, account, session, time):
         """,
         (account, session),
     )
-    preferences = {key: {"value": value} for key, value in rows}
+    preferences = {
+        key: {"value": redact(value) if key == "salutation" and value is not None else value}
+        for key, value in rows
+    }
     _record_audit(connection, account, session, preferences, "read", time)
     return preferences
 
