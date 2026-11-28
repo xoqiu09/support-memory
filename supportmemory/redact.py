@@ -18,8 +18,8 @@ _BUILDING_ADDRESS = (
 _ADDRESS = re.compile(
     r"(?P<label>[\u4e00-\u9fff]{0,64}?地址(?:是|为|[：:])\s*)"
     rf"(?:{_NAMED_ADDRESS}|{_PLACE_NAME}{{0,64}}?\s*{_BUILDING_ADDRESS})"
-    rf"|{_NAMED_ADDRESS}"
-    rf"|(?:{_PLACE_NAME}{{1,64}}花园\s*)?(?<!{_ADDRESS_DIGIT}){_BUILDING_ADDRESS}"
+    rf"|(?P<delivery>{_PLACE_NAME}{{0,64}}送到\s*)?"
+    rf"(?:{_NAMED_ADDRESS}|(?:{_PLACE_NAME}{{1,64}}花园\s*)?(?<!{_ADDRESS_DIGIT}){_BUILDING_ADDRESS})"
 )
 _ID_NUMBER = re.compile(rf"(?<!{_DIGIT})(?:{_DIGIT}{{17}}[0-9０-９XxＸｘ]|{_DIGIT}{{15}})(?!{_DIGIT})")
 _PHONE_NUMBER = re.compile(
@@ -35,7 +35,14 @@ def contains_sensitive_data(text):
     return bool(_ADDRESS.search(text)) or contains_personal_number(text)
 
 
+def _mask_address(match):
+    prefix = match["label"] or ""
+    if match["delivery"]:
+        prefix = _ADDRESS.sub(_mask_address, match["delivery"])
+    return prefix + "[地址已遮盖]"
+
+
 def redact(text):
     text = _ID_NUMBER.sub("[身份证号已遮盖]", text)
     text = _PHONE_NUMBER.sub("[手机号已遮盖]", text)
-    return _ADDRESS.sub(r"\g<label>[地址已遮盖]", text)
+    return _ADDRESS.sub(_mask_address, text)

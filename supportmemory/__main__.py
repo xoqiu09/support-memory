@@ -9,6 +9,7 @@ from tempfile import NamedTemporaryFile
 
 from .bot import InvalidOrderStatus, chat
 from .prefs import PREFERENCE_KEYS
+from .redact import contains_sensitive_data
 from .store import (
     ACTIVITY_FILENAME,
     InvalidIdentifier,
@@ -41,6 +42,16 @@ _DEMO = (
     {"command": "chat", "account": "A", "session": "a3", "message": "列出订单"},
     {"command": "chat", "account": "A", "session": "a3", "message": "叫我王先生13812345678"},
 )
+
+
+class _OrderFileObject(dict):
+    def __init__(self, pairs):
+        super().__init__()
+        self.duplicate_key = None
+        for key, value in pairs:
+            if key in self:
+                self.duplicate_key = key
+            self[key] = value
 
 
 def _same_output_file(resolved_path, protected_path):
@@ -179,9 +190,16 @@ def main():
 
     if args.command in {"chat", "export"}:
         try:
-            orders = json.loads(_ORDERS_PATH.read_text(encoding="utf-8"))
+            orders = json.loads(
+                _ORDERS_PATH.read_text(encoding="utf-8"), object_pairs_hook=_OrderFileObject
+            )
         except FileNotFoundError:
             parser.exit(1, "缺少 data/orders.json。请按 HANDOFF 的缺数据恢复步骤复制样例订单。\n")
+        if isinstance(orders, _OrderFileObject) and orders.duplicate_key is not None:
+            duplicate_account = orders.duplicate_key
+            if contains_sensitive_data(duplicate_account):
+                parser.exit(1, "订单文件中有重复的账户标识。\n")
+            parser.exit(1, f"订单文件中的账户 {duplicate_account} 重复。\n")
 
     if args.command == "export":
         path = args.out.resolve()
