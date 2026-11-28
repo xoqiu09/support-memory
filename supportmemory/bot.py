@@ -33,8 +33,8 @@ def chat(connection, orders, account, message, written_at, session=None):
                     write_preferences(connection, account, updates, written_at)
                 else:
                     write_preferences(connection, account, updates, written_at, session)
-                    for key in updates:
-                        delete_session_preferences(connection, account, written_at, session, key)
+                for key in updates:
+                    delete_session_preferences(connection, account, written_at, key=key)
             elif session is not None:
                 write_session_preferences(connection, account, session, updates, written_at)
 

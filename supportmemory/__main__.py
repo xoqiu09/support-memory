@@ -12,7 +12,9 @@ from .prefs import PREFERENCE_KEYS
 from .store import (
     ACTIVITY_FILENAME,
     InvalidIdentifier,
+    MismatchedDatabasePair,
     MissingActivityDatabase,
+    UnconfirmedLegacyPair,
     forget,
     initialize,
     read_audit,
@@ -141,6 +143,7 @@ def _export(orders, path, m2_path):
 
 def main():
     parser = argparse.ArgumentParser(description="青柚家电客服偏好演示")
+    parser.add_argument("--confirm-legacy-pair", action="store_true", help="确认两份无编号的旧库来自同一套数据")
     commands = parser.add_subparsers(dest="command", required=True)
 
     chat_parser = commands.add_parser("chat", help="发送消息")
@@ -198,7 +201,7 @@ def main():
         validate_identifiers(args.account, getattr(args, "session", None))
         with closing(sqlite3.connect(_DATABASE_PATH)) as connection:
             read_table = args.command if args.command in {"history", "audit"} else None
-            initialize(connection, read_table=read_table)
+            initialize(connection, read_table=read_table, confirm_legacy_pair=args.confirm_legacy_pair)
             if args.command == "chat":
                 print(chat(connection, orders, args.account, args.message, utc_now(), args.session))
             elif args.command == "forget":
@@ -223,6 +226,10 @@ def main():
         parser.error(str(error))
     except MissingActivityDatabase:
         parser.exit(1, "记忆数据库缺少授权记录。请从同一备份恢复 memory-m2.sqlite3，再重试。\n")
+    except MismatchedDatabasePair:
+        parser.exit(1, "两份记忆数据库不配套。请从同一备份恢复两份文件，再重试。\n")
+    except UnconfirmedLegacyPair:
+        parser.exit(1, "两份旧版记忆库没有配对编号。确认来源一致后，请在子命令前加 --confirm-legacy-pair 再重试。\n")
     except sqlite3.OperationalError as error:
         if "locked" in str(error).lower():
             parser.exit(1, "记忆数据库被锁定。请关闭占用数据库的程序，再重试。\n")

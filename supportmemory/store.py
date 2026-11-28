@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
+from uuid import uuid4
 
 from .history import append_turn, encode_window
 from .redact import contains_sensitive_data, redact
@@ -26,7 +27,48 @@ class MissingActivityDatabase(RuntimeError):
     """已配对的记忆库缺少授权数据。"""
 
 
-def initialize(connection, *, read_table=None):
+class MismatchedDatabasePair(RuntimeError):
+    """两份记忆库的配对编号无法匹配。"""
+
+
+class UnconfirmedLegacyPair(RuntimeError):
+    """旧版 M2 库没有配对编号，需要确认来源。"""
+
+
+def _check_database_pair(connection, confirm_legacy_pair):
+    schemas = ("main", "activity")
+    main_tables, activity_tables = (
+        {name for (name,) in connection.execute(f"SELECT name FROM {schema}.sqlite_master WHERE type = 'table'")}
+        for schema in schemas
+    )
+    if {"consent", "session_preferences", "history", "audit"} & main_tables or "preferences" in activity_tables:
+        raise MismatchedDatabasePair
+
+    if "consent" not in activity_tables:
+        version = connection.execute("PRAGMA main.user_version").fetchone()[0]
+        if version >= _PAIRED_DATABASE_VERSION:
+            raise MissingActivityDatabase
+
+    if "database_pair" in main_tables or "database_pair" in activity_tables:
+        if "database_pair" not in main_tables or "database_pair" not in activity_tables:
+            raise MismatchedDatabasePair
+        main_id, activity_id = (
+            connection.execute(f"SELECT id FROM {schema}.database_pair").fetchall()
+            for schema in schemas
+        )
+        if len(main_id) != 1 or not main_id[0][0] or main_id != activity_id:
+            raise MismatchedDatabasePair
+        return True, activity_tables
+
+    if "consent" in activity_tables:
+        if "preferences" not in main_tables:
+            raise MismatchedDatabasePair
+        if not confirm_legacy_pair:
+            raise UnconfirmedLegacyPair
+    return False, activity_tables
+
+
+def initialize(connection, *, read_table=None, confirm_legacy_pair=False):
     paired = connection.execute("PRAGMA main.user_version").fetchone()[0] >= _PAIRED_DATABASE_VERSION
     databases = {name: path for _, name, path in connection.execute("PRAGMA database_list")}
     if "activity" not in databases:
@@ -37,20 +79,16 @@ def initialize(connection, *, read_table=None):
         connection.execute(
             "ATTACH DATABASE ? AS activity", (str(activity_path) if activity_path else ":memory:",)
         )
-    if paired or read_table is not None:
-        tables = {
-            name for (name,) in connection.execute(
-                "SELECT name FROM activity.sqlite_master WHERE type = 'table'"
-            )
-        }
-        if paired and "consent" not in tables:
-            raise MissingActivityDatabase
-        if read_table in tables:
-            if not paired and "consent" in tables:
+    if read_table is not None:
+        with transaction(connection, immediate=False):
+            has_pair_id, tables = _check_database_pair(connection, confirm_legacy_pair)
+        if has_pair_id and read_table in tables:
+            if not paired:
                 _mark_pair_on_read(connection)
             return
 
     with transaction(connection):
+        has_pair_id, _ = _check_database_pair(connection, confirm_legacy_pair)
         connection.execute(
             """
             CREATE TABLE IF NOT EXISTS preferences (
@@ -88,6 +126,11 @@ def initialize(connection, *, read_table=None):
             )""",
         ):
             connection.execute(f"CREATE TABLE IF NOT EXISTS activity.{definition}")
+        if not has_pair_id:
+            pair_id = uuid4().hex
+            for schema in ("main", "activity"):
+                connection.execute(f"CREATE TABLE {schema}.database_pair (id TEXT NOT NULL PRIMARY KEY)")
+                connection.execute(f"INSERT INTO {schema}.database_pair (id) VALUES (?)", (pair_id,))
         if not paired:
             connection.execute(f"PRAGMA main.user_version = {_PAIRED_DATABASE_VERSION}")
 
@@ -107,12 +150,12 @@ def _mark_pair_on_read(connection):
 
 
 @contextmanager
-def transaction(connection):
+def transaction(connection, *, immediate=True):
     if connection.in_transaction:
         yield
         return
     with connection:
-        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
         yield
 
 
