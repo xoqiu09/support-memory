@@ -8,7 +8,7 @@
 
 ## 怎么验证的
 
-本地运行 `python3 -m unittest`，**46 项测试全部通过**。测试核对了跨会话记忆、账户隔离、偏好清除、写入前遮盖、对话历史和摘要的长度上限。测试也确认，关闭跨会话保存后，新偏好只在当前会话生效，审计记录里没有偏好值。
+本地运行 `python3 -m unittest`，**55 项测试全部通过**。测试核对了跨会话记忆、账户隔离、偏好清除、写入前遮盖、对话历史和摘要的长度上限。测试也确认，关闭跨会话保存后，新偏好只在当前会话生效，审计记录里没有偏好值。
 
 验证测试时，分别故意跳过写入前遮盖、移除按账户筛选，重跑对应测试，两项测试都按预期失败。
 
@@ -28,7 +28,7 @@ python3 -m supportmemory chat --account A --session next "列出订单"
 Support teams lose time asking returning customers to repeat their preferences.\
 This offline Python 3.10+ CLI remembers preferences across chats for the same account and lets customers view or clear them and turn off cross-chat saving.\
 It masks common personal details before storage, keeps a size-limited history and summary of redacted chats, and logs preference reads, writes, and deletions without recording the values.\
-It exports reproducible M1 and M2 demo JSON files. All 46 tests passed. Skipping redaction or removing the account filter made the relevant tests fail.\
+It exports reproducible M1 and M2 demo JSON files. All 55 tests passed. Skipping redaction or removing the account filter made the relevant tests fail.\
 The demo uses fictional data, with no real users or live model. I set the requirements and acceptance criteria and directed AI coding tools to build it.
 
 ## 运行

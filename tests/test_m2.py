@@ -98,6 +98,38 @@ class M2Tests(unittest.TestCase):
         self.assertEqual(self.audit(), [])
         self.assertEqual(self.chat("列出订单", account="B"), B_DEFAULT)
 
+    def test_duplicate_order_account_is_reported_without_adding_history(self):
+        self.chat("已有对话")
+        before = self.history()
+        orders_path = self.workdir / "data/orders.json"
+        orders_path.write_text(
+            '{"A": [{"id": "A-101", "status": "shipped"}], '
+            '"A": [{"id": "A-102", "status": "unshipped"}]}',
+            encoding="utf-8",
+        )
+
+        result = self.run_cli("chat", "--account", "A", "--session", "a1", "列出订单")
+
+        self.assertEqual(result.returncode, 1, result.stdout or result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr, "订单文件中的账户 A 重复。\n")
+        self.assertEqual(self.history(), before)
+
+    def test_duplicate_sensitive_order_account_is_hidden_when_querying_another_account(self):
+        phone = "13800000000"
+        orders_path = self.workdir / "data/orders.json"
+        orders_path.write_text(
+            f'{{"A": [{{"id": "A-101", "status": "shipped"}}], "{phone}": [], "{phone}": []}}',
+            encoding="utf-8",
+        )
+
+        result = self.run_cli("chat", "--account", "A", "--session", "a1", "列出订单")
+
+        self.assertEqual(result.returncode, 1, result.stdout or result.stderr)
+        self.assertNotIn(phone, result.stdout)
+        self.assertNotIn(phone, result.stderr)
+        self.assertEqual(result.stderr, "订单文件中有重复的账户标识。\n")
+
     def test_consent_off_keeps_new_preferences_in_one_session(self):
         self.cli("consent", "--account", "A", "off")
         self.assertEqual(self.chat("以后只看未发货的"), A_FILTERED)
@@ -466,6 +498,26 @@ class M2Tests(unittest.TestCase):
         )):
             with self.subTest(message=message):
                 session = f"address-{index}"
+                self.chat(message, session=session)
+                first_turn = self.history(session=session)["turns"][0]["user"]
+                for _ in range(6):
+                    self.chat("好", session=session)
+                first_summary = self.history(session=session)["summary"][0]["user"]
+
+                self.assertEqual((first_turn, first_summary), (expected, expected))
+
+    def test_delivery_request_survives_address_redaction_in_history_and_summary(self):
+        mask = "[地址已遮盖]"
+        cases = (
+            ("请把替换的电饭煲送到青柚路8号", f"请把替换的电饭煲送到{mask}"),
+            ("请把A-101电饭煲送到青柚路8号", f"请把A-101电饭煲送到{mask}"),
+            ("从青柚路2号送到青柚路8号", f"{mask}送到{mask}"),
+            ("请把替换的电饭煲送到青柚花园3栋2单元602室", f"请把替换的电饭煲送到{mask}"),
+            ("别送到门店请把电饭煲送到青柚路8号", f"别送到门店请把电饭煲送到{mask}"),
+        )
+        for index, (message, expected) in enumerate(cases):
+            with self.subTest(message=message):
+                session = f"delivery-{index}"
                 self.chat(message, session=session)
                 first_turn = self.history(session=session)["turns"][0]["user"]
                 for _ in range(6):
