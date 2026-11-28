@@ -35,6 +35,9 @@ def chat(connection, orders, account, message, written_at=None, session=None):
         key: redact(value) if value is not None else None
         for key, value in extract_preferences(message).items()
     }
+    one_turn_preferences = {}
+    if "one_turn_order_filter" in updates:
+        one_turn_preferences["order_filter"] = {"value": updates.pop("one_turn_order_filter")}
 
     with transaction(connection):
         if written_at is None:
@@ -54,6 +57,7 @@ def chat(connection, orders, account, message, written_at=None, session=None):
         preferences = read_preferences(connection, account, session, written_at)
         if session is not None:
             preferences.update(read_session_preferences(connection, account, session, written_at))
+        preferences.update(one_turn_preferences)
         answer = _reply(account_orders, preferences)
         if session is not None:
             record_turn(connection, account, session, message, answer, updates)

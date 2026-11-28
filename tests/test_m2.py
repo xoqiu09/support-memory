@@ -392,6 +392,19 @@ class M2Tests(unittest.TestCase):
                 self.assertEqual((answer, next_answer, self.preference_rows()),
                                  (A_FILTERED, A_FILTERED, before))
 
+    def test_one_turn_order_filter_preserves_saved_value_and_time(self):
+        messages = ("这次看全部订单", "这次请看全部订单", "这次想看全部订单")
+        for index, message in enumerate(messages, start=2):
+            with self.subTest(message=message):
+                self.assertEqual(self.chat("以后只看未发货的"), A_FILTERED)
+                before = json.loads(self.cli("show", "--account", "A"))
+                self.assertEqual(before["order_filter"]["value"], "unshipped")
+
+                self.assertEqual(self.chat(message), A_DEFAULT)
+                self.assertEqual(json.loads(self.cli("show", "--account", "A")), before)
+                self.assertEqual(self.chat("列出订单"), A_FILTERED)
+                self.assertEqual(self.chat("列出订单", session=f"a{index}"), A_FILTERED)
+
     def test_consent_toggle_preserves_old_preferences_and_forget_clears_them(self):
         self.chat("以后只看未发货的")
         before = self.preference_rows()
@@ -422,6 +435,23 @@ class M2Tests(unittest.TestCase):
         shipped = "按你的设置，只列已发货订单\nA-101（已发货）"
         self.assertEqual(self.chat("以后只看已发货的", session="a2"), shipped)
         self.assertEqual(self.chat("列出订单"), f"小青，{shipped}")
+
+    def test_blank_sessions_are_rejected_without_memory_writes(self):
+        self.cli("consent", "--account", "A", "off")
+
+        for command, message in (("chat", ("叫我小柚",)), ("history", ())):
+            for session in ("", " \t　"):
+                with self.subTest(command=command, session=session):
+                    result = self.run_cli(command, "--account", "A", "--session", session, *message)
+                    self.assertEqual(result.returncode, 2, result.stdout or result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertIn("会话不能为空。", result.stderr)
+
+        with closing(sqlite3.connect(self.activity)) as connection:
+            with self.subTest(table="session_preferences"):
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM session_preferences").fetchone(), (0,))
+            with self.subTest(table="history"):
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM history").fetchone(), (0,))
 
     def test_sensitive_account_and_session_identifiers_are_rejected(self):
         paths = (self.database, self.activity)
@@ -553,6 +583,13 @@ class M2Tests(unittest.TestCase):
                 first_summary = self.history(session=session)["summary"][0]["user"]
 
                 self.assertEqual((first_turn, first_summary), (expected, expected))
+
+    def test_address_change_redacts_old_and_new_addresses_in_history(self):
+        self.chat("青禾路八号改为新地址是青禾路九号")
+
+        self.assertEqual(
+            self.history()["turns"][0]["user"], "[地址已遮盖]改为新地址是[地址已遮盖]"
+        )
 
     def test_delivery_request_survives_address_redaction_in_history_and_summary(self):
         mask = "[地址已遮盖]"

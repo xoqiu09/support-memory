@@ -8,8 +8,8 @@ PREFERENCE_KEYS = ("order_filter", "brevity", "salutation")
 _SALUTATION_SPEAKER = r"(?:维修师傅|师傅|客服|维修人员)"
 _RULE = re.compile(
     r"(?P<negated>(?:不要|不用|不必|不想|别|不)\s*)?(?:"
-    r"只看\s*(?P<filter>未发货|已发货)"
-    r"|(?P<all>看\s*全部订单)"
+    r"(?:(?P<one_turn>这次\s*(?:(?:请|想)\s*)?)?"
+    r"(?:只看\s*(?P<filter>未发货|已发货)|(?P<all>看\s*全部订单)))"
     r"|(?P<short>(?:回答\s*)?简短点)"
     r"|(?P<long>(?:回答\s*)?详细一点)"
     rf"|(?P<reported_salutation>{_SALUTATION_SPEAKER}\s*(?:(?:刚才|刚刚|之前|先前|刚)\s*)?叫我)"
@@ -35,12 +35,9 @@ def extract_preferences(message):
     for index, match in enumerate(matches):
         if match["negated"] or match["reported_salutation"]:
             continue
-        if match.lastgroup == "filter":
-            updates["order_filter"] = (
-                "unshipped" if match["filter"] == "未发货" else "shipped"
-            )
-        elif match.lastgroup == "all":
-            updates["order_filter"] = None
+        if match.lastgroup in ("filter", "all"):
+            key = "one_turn_order_filter" if match["one_turn"] else "order_filter"
+            updates[key] = {"未发货": "unshipped", "已发货": "shipped"}.get(match["filter"])
         elif match.lastgroup == "short":
             updates["brevity"] = "short"
         elif match.lastgroup == "long":
